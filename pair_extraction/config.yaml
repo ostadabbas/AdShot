@@ -1,0 +1,58 @@
+# Central configuration for the pair-extraction pipeline.
+# Paths support {data_root}, {version}, and {output_dir} templating (resolved in config.py).
+
+paths:
+  data_root: "/projects/adsum-mllm-om/data2"
+  version: "0.1"
+  output_dir: "{data_root}/{version}"            # -> /projects/adsum-mllm-om/data/0.1
+  video_dir: "/projects/adsum-mllm-om/videomedia"
+
+  shotsplits_dir: "{output_dir}/shotsplits"
+  clusters_dir:   "{output_dir}/clusters"
+  embeddings_dir: "{output_dir}/embeddings"
+  keyframes_dir:  "{output_dir}/keyframes"
+
+  status_file:   "{output_dir}/processing_status.json"
+  fullmatch_out: "{data_root}/fullmatch.csv"
+
+  # Which batch is used by default when none is passed on the CLI.
+  default_batch: "batch12"
+
+  # Per-batch input CSVs. Convention: use *_videos_fix.csv where it exists
+  # (batch6+), otherwise *_videos_wen.csv / *_videos.csv.
+  batch_csvs:
+    batch1:  "{data_root}/batch1_videos_wen.csv"
+    batch2:  "{data_root}/batch2_videos_wen.csv"
+    batch3:  "{data_root}/batch3_videos_wen.csv"
+    batch4:  "{data_root}/batch4_videos_wen.csv"
+    batch5:  "{data_root}/batch5_videos_wen.csv"
+    batch6:  "{data_root}/batch6_videos_fix.csv"
+    batch7:  "{data_root}/batch7_videos_fix.csv"
+    batch8:  "{data_root}/batch8_videos_fix.csv"
+    batch9:  "{data_root}/batch9_videos_fix.csv"
+    batch10: "{data_root}/batch10_videos_fix.csv"
+    batch11: "{data_root}/batch11_videos_fix.csv"
+    batch12: "{data_root}/batch12_videos_fix.csv"
+
+model:
+  # Relative to the package directory (pair_extraction/). Resolved to an absolute path in config.py.
+  autoshot_ckpt: "models/ckpt_0_200_0.pth"
+  ffmpeg_path: "/projects/adsum-mllm-om/miniconda3/envs/shot/bin/ffmpeg"
+
+params:
+  shot_threshold: 0.1
+  shot_window_batch_size: 64   # AutoShot windows per GPU forward (Part F batching)
+  min_gap_frames: 6
+  min_frames_in_shot: 5
+  frame_width: 320
+  frame_height: 180
+  keyframe_percentiles: [0.1, 0.25, 0.5, 0.75, 0.9]
+  image_quality: 95
+  image_subsampling: 0
+  embedding_batch_size: 32
+  embedding_dim: 1024
+  num_workers: 8
+
+  # Pairing keep-gate (s3_pairing.py). mapping_degree = num_mapped_shots / target_shot_count.
+  # LOCKED at 0.8. 0.9 = original base (673 pairs on batch1-5); 0.85 -> 906; 0.8 -> 1238.
+  min_mapping_degree: 0.8
