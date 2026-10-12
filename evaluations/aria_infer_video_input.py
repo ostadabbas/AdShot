@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""
+qwen_infer_with_eval_frames.py
+
+- Uses FFMPEG_PATH to extract a 15s clip (no PATH dependency).
+- Computes the exact ORIGINAL frame indices (0-based) used for eval:
+    N = round(clip_len_sec * fps)
+    t_i = start_sec + i/fps
+    idx_i = floor(t_i * orig_fps), clamped to [0, total_frames-1]
+- Runs Qwen2.5-VL-7B inference on that 15s clip using the same fps you pass.
+
+Install:
+  pip install "git+https://github.com/huggingface/transformers" accelerate
+  pip install "qwen-vl-utils[decord]"
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
+from urllib.parse import urlparse, unquote
+from PIL import Image
+
+import numpy as np
+import torch
+from transformers import (
+    AriaForConditionalGeneration,
+    AriaProcessor,
+    BitsAndBytesConfig,
+)
+import json
+import re
+import math
+import ast
+from typing import Dict, Any, List, Optional
+import itertools
+
+from build_message import build_messages
+
+#add by wen, see error running aria model
+# Error processing row 0: _histc_cuda with floating point input does not have a deterministic implementation, but you set 'torch.use_deterministic_algorithms(True)'. You can turn off determinism just for this operation, or you can use the 'warn_only=True' option, if that's acceptable for your application. You can also file an issue at https://github.com/pytorch/pytorch/issues to help us prioritize adding deterministic support for this operation.
+torch.use_deterministic_algorithms(False)
+
+# >>> YOUR ENVIRONMENT <<<
+FFMPEG_PATH = "/projects/adsum-mllm-om/miniconda3/envs/shot/bin/ffmpeg"
+os.environ["PATH"] = "/projects/adsum-mllm-om/miniconda3/envs/shot/bin:" + os.environ["PATH"]
+
+SHORT_THRESHOLD = 0.5  # seconds
+LONG_THRESHOLD = 4.0
+
+
+def unique_in_range(seq, lo, hi):
+    out, seen = [], set()
+    for x in seq:
+        if lo <= x <= hi and x not in seen:
+            out.append(x); seen.add(x)
+    return out
+
+def selection_total_seconds(selected_shots, shot_durations):
+    return sum(shot_durations[s-1] for s in selected_shots)
+
+def validate_selection(selected_shots, shot_durations, min_k=5, max_k=12, min_s=14.5, max_s=15.5):
+    n = len(shot_durations)
+    selected_shots = unique_in_range(selected_shots, 1, n)
+    total = selection_total_seconds(selected_shots, shot_durations)
+    ok = (min_k <= len(selected_shots) <= max_k) and (min_s <= total <= max_s) and (len(selected_shots) < n)
+    return ok, total, selected_shots
+
+
+def parse_selected_indices(a_value: str) -> List[int]:
+    """
+    Converts model output like:
+      "0, 4, 12, 16, 23, 27, 30"
+    into [0, 4, 12, 16, 23, 27, 30]
+
+    Also tolerates formats like:
+      "[0, 4, 12]" or "0 4 12"
+    """
+    nums = re.findall(r"-?\d+", a_value)
+    return [int(x) for x in nums]
+
+
+def extract_clip_ffmpeg(src: Path, dst: Path, start_sec: float, clip_len_sec: float, ffmpeg_bin: str) -> None:
+    ffmpeg_bin_path = Path(ffmpeg_bin)
+    if not ffmpeg_bin_path.exists():
+        raise FileNotFoundError(f"ffmpeg not found at: {ffmpeg_bin}")
+
+    # Accurate cut: place -ss after -i (slower but aligns exactly)
+    cmd_x264 = [
+        str(ffmpeg_bin_path), "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(src),
+        "-ss", str(start_sec),
+        "-t", str(clip_len_sec),
+        "-an",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        str(dst),
+    ]
+    try:
+        subprocess.run(cmd_x264, check=True)
+        return
+    except Exception:
+        # Fallback (less accurate if keyframe-limited, but better than failing)
+        cmd_copy = [
+            str(ffmpeg_bin_path), "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", str(start_sec),
+            "-t", str(clip_len_sec),
+            "-i", str(src),
+            "-c", "copy",
+            str(dst),
+        ]
+        subprocess.run(cmd_copy, check=True)
+
+def parse_shot_ranges(focal_shotsplit: List[int]) -> List[tuple[int, int]]:
+    """ Convert split points to (start_frame, end_frame) ranges """
+    ranges = []
+    start = 0
+    for end in focal_shotsplit:
+        ranges.append((start, end))
+        start = end + 1
+    return ranges
+
+
+def load_aria(model_name: str, attn_impl=None):
+    
+    #add by wen
+    torch.use_deterministic_algorithms(False)
+    
+    model = AriaForConditionalGeneration.from_pretrained(
+        model_name,
+        #torch_dtype=torch.float16,   # use fp16 (A100-friendly)
+        torch_dtype=torch.bfloat16,   # https://huggingface.co/rhymes-ai/Aria
+        device_map="auto",           # single GPU; change to "auto" if needed
+    ).eval()
+
+    processor = AriaProcessor.from_pretrained(model_name)
+    return model, processor
+
+
+def file_uri_to_path(uri: str) -> str:
+    # "file:///tmp/x.jpg" -> "/tmp/x.jpg"
+    p = urlparse(uri)
+    if p.scheme != "file":
+        raise ValueError(f"Expected file:// URI, got: {uri}")
+    return unquote(p.path)
+
+def nearest_even(val: float) -> int:
+    # nearest even integer to val (ties go to the higher even)
+    return max(2, int(2 * round(val / 2.0)))
+
+def resize_to_max_side_even(img: Image.Image, x: int) -> Image.Image:
+    """
+    If max(H, W) > x: scale down so max(H, W) == x (aspect preserved).
+    Force final H and W to be even.
+    """
+    w, h = img.size
+    max_side = max(w, h)
+    if max_side <= x:
+        return img
+
+    scale = x / float(max_side)
+    new_w = max(2, int(round(w * scale)))
+    new_h = max(2, int(round(h * scale)))
+
+    # make even
+    new_w -= (new_w % 2)
+    new_h -= (new_h % 2)
+    new_w = max(2, new_w)
+    new_h = max(2, new_h)
+
+    return img.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+
+def convert_to_aria_payload(raw_msgs, max_pixels: int):
+    """
+    Converts your raw_msgs (with file:// image URIs) into:
+      - aria_msgs: with {"type":"image"} placeholders only
+      - images: list of resized PIL images in the same order
+
+    max_pixels is used to derive x ~= sqrt(max_pixels) (nearest even),
+    and we ensure max(H, W) <= x to control memory.
+    """
+    x = nearest_even(math.sqrt(max_pixels))
+
+    aria_msgs = []
+    images = []
+
+    for m in raw_msgs:
+        role = m["role"]
+        content = m.get("content", [])
+
+        new_content = []
+        for item in content:
+            t = item.get("type")
+
+            if t == "text":
+                new_content.append({"type": "text", "text": item.get("text", "")})
+
+            elif t == "image":
+                new_content.append({"type": "image"})
+
+                uri = item.get("image")
+                if not uri:
+                    raise ValueError("Image item missing 'image' field")
+
+                img_path = file_uri_to_path(uri)
+                pil = Image.open(img_path).convert("RGB")
+                pil = resize_to_max_side_even(pil, x)   # <-- key line
+                images.append(pil)
+
+            else:
+                pass
+
+        aria_msgs.append({"role": role, "content": new_content})
+
+    return aria_msgs, images
+
+
+@torch.inference_mode()
+def infer_one(model, processor, messages, max_new_tokens: int, max_pixels: int, temperature: float, top_p: float) -> str:
+    aria_msgs, images = convert_to_aria_payload(messages, max_pixels=max_pixels)        # convert first
+    text = processor.apply_chat_template(aria_msgs, add_generation_prompt=True)
+
+    inputs = processor(text=text, images=images, return_tensors="pt")
+    if "pixel_values" in inputs:
+        #inputs["pixel_values"] = inputs["pixel_values"].to(torch.float16)
+        inputs["pixel_values"] = inputs["pixel_values"].to(torch.bfloat16) #use bfloat16
+    inputs = inputs.to(model.device)
+
+    do_sample = temperature > 0.0
+    gen_kwargs = dict(
+        max_new_tokens=max_new_tokens,
+        do_sample=do_sample,
+    )
+    if do_sample:
+        gen_kwargs.update(dict(temperature=temperature, top_p=top_p))
+
+    output = model.generate(
+        **inputs,
+        stop_strings=["<|im_end|>"],
+        tokenizer=processor.tokenizer,
+        **gen_kwargs,
+    )
+
+    gen_ids = output[0][inputs["input_ids"].shape[1]:]
+    response = processor.decode(gen_ids, skip_special_tokens=True).strip()
+    return response
+
+def inference_aria(
+    *,
+    model,
+    processor,
+    video_path: Path,
+    video_info: Dict[str, Any],
+    fps: int,
+    max_pixels: int,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+):
+    """
+    Runs one inference using build_messages(...) and returns:
+      out: raw model string output
+      ok, total, selected: validation outputs from validate_selection(...)
+    """
+    messages, shot_durations, durations_str = build_messages(
+        video_path,
+        video_info,
+        fps=fps,
+        max_pixels=max_pixels,
+    )
+
+    
+    out = infer_one(
+        model=model,
+        processor=processor,
+        messages=messages,
+        max_new_tokens=max_new_tokens,
+        max_pixels=max_pixels,
+        temperature=temperature,
+        top_p=top_p,
+    )
+    
+    selected = parse_selected_indices(out)
+    ok, total, selected = validate_selection(selected, shot_durations)
+
+    return out, ok, total, selected
+
+def main():
+    import pandas as pd
+    import sys
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--project_root",
+        default="/projects/adsum-mllm-om",
+        help="Absolute path to repo root that should be added to sys.path",
+    )
+
+    ap.add_argument("--model", default="rhymes-ai/Aria")
+    ap.add_argument("--csv", required=True, help="Path to eval.csv")
+    ap.add_argument("--row", type=int, default=0, help="Row number (0-based) from CSV to extract as input video")
+    ap.add_argument("--fps", type=int, default=5)
+    ap.add_argument("--max_pixels", type=int, default=360 * 420)
+    ap.add_argument("--max_new_tokens", type=int, default=256)
+    ap.add_argument("--temperature", type=float, default=0.0)
+    ap.add_argument("--top_p", type=float, default=0.9)
+    ap.add_argument("--attn_impl", default="sdpa", choices=["sdpa", "flash_attention_2", "eager"])
+    ap.add_argument("--ffmpeg", default=FFMPEG_PATH, help="Path to ffmpeg binary")
+    args = ap.parse_args()
+
+    project_root = Path(args.project_root).expanduser().resolve()
+    if not project_root.exists():
+        raise FileNotFoundError(f"--project_root does not exist: {project_root}")
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    df = pd.read_csv((project_root / args.csv).resolve())
+    if args.row < 0 or args.row >= len(df):
+        raise IndexError(f"Row index {args.row} out of range for csv file {args.csv}")
+    video_path = (project_root / Path(df.loc[args.row, "focal_relative_path"])).resolve()
+    if not video_path.exists():
+        raise FileNotFoundError(video_path)
+        
+    video_info = df.loc[args.row, :].to_dict()    
+
+    with tempfile.TemporaryDirectory() as td:
+        model, processor = load_aria(args.model)
+
+        out, ok, total, selected = inference_aria(
+            model=model,
+            processor=processor,
+            video_path=video_path,
+            video_info=video_info,
+            fps=args.fps,
+            max_pixels=args.max_pixels,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p,
+        )
+
+
+    result_json_str = json.dumps(
+        {
+            "video": str(video_path.resolve()),
+            "answers": out,
+            # keeping these optional; remove if you truly don't want output changes
+            "ok": ok,
+            "total": total,
+            "selected": selected,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    payload = json.loads(result_json_str)
+    print(result_json_str)
+        
+
+if __name__ == "__main__":
+    main()

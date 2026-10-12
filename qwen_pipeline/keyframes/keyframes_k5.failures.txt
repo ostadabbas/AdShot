@@ -1,0 +1,3 @@
+tA1ex9Ky41Y	RuntimeError: ffmpeg produced no frame for shot starting at index 668 (video /projects/adsum-mllm-om/videomedia/Philips/tA1ex9Ky41Y.mp4)
+gGBByQhHO1s	RuntimeError: ffmpeg produced no frame for shot starting at index 899 (video /projects/adsum-mllm-om/videomedia/Cigna Healthcare/gGBByQhHO1s.mp4)
+mf-cY1cgXPY	RuntimeError: ffmpeg produced no frame for shot starting at index 847 (video /projects/adsum-mllm-om/videomedia/Force Factor/mf-cY1cgXPY.mp4)

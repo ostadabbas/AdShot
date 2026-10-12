@@ -48,3 +48,51 @@ Thumbs.db
 *.mov
 *.wmv
 
+
+# --- from mllm project ---
+.env
+/data_archive
+/data
+/temp_dir
+/tmp_archives
+/clustering_code
+label_handles.ipynb
+rebatch.ipynb
+_leaky_test.sqlite
+upload.txt
+youtube_cookies.txt
+*_rsync.log
+*_rsync_selected.log
+
+# Vendored model checkpoints (kept on disk, out of git)
+pair_extraction/models/*.pth
+
+# pair_extraction runtime artifacts (regenerated; not source)
+pair_extraction/logs/
+pair_extraction/data/
+pair_extraction/*.log
+
+# Python / notebook caches
+__pycache__/
+.ipynb_checkpoints/
+
+# W&B local run logs (training metrics live on wandb.ai, not in git)
+wandb/
+
+# qwen_pipeline large artifacts (weights, keyframe cache, frames, logs) — out of git
+qwen_pipeline/keyframes/*.h5
+qwen_pipeline/training/runs/qwen3vl8b_lora_*/
+qwen_pipeline/data/frames/
+qwen_pipeline/logs/
+qwen_pipeline/**/*.log
+# model weights anywhere under qwen_pipeline
+qwen_pipeline/**/*.safetensors
+qwen_pipeline/**/*.bin
+qwen_pipeline/**/*.pt
+qwen_pipeline/**/*.pth
+# result backups / partial dumps (keep clean results only)
+qwen_pipeline/results/*.bak_*
+qwen_pipeline/results/*.bak
+qwen_pipeline/results/*partial_oom*
+
+video_curation/data/
