@@ -1,0 +1,10 @@
+google-api-python-client
+isodate
+numpy
+openai
+pandas
+python-dotenv
+scikit-learn
+streamlit
+tqdm
+yt-dlp
