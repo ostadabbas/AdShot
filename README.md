@@ -15,7 +15,7 @@ video_curation/   ──►  pair_extraction/  ──►  AdShot823.csv  ──�
 | folder | what it does | runs on | docs |
 |---|---|---|---|
 | `video_curation/` | Finds brand channels, lists uploads, screens for short/long ad candidates (OpenAI embeddings + DBSCAN), downloads with yt-dlp, uploads to the cluster. Outputs `videomedia/<Channel>/<id>.mp4` and `logs/batchN_videos.csv`. | local (Windows/WSL) | [readme](video_curation/readme.md) |
-| `pair_extraction/` | Per brand: AutoShot shot detection → keyframes → Swin3D-B embeddings → DBSCAN → shot-overlap matching. Outputs `fullmatch.csv` (the `AdShot823.csv` schema). | cluster, `shot` env | [readme](pair_extraction/readme.md), `PROGRESS.md`, `THRESHOLDS.md`, `HANDOFF.md` |
+| `pair_extraction/` | Per brand: AutoShot shot detection → keyframes → Swin3D-B embeddings → DBSCAN → shot-overlap matching. Outputs `fullmatch.csv` (the `AdShot823.csv` schema). | cluster, `shot` env | [readme](pair_extraction/readme.md), `THRESHOLDS.md` |
 | `evaluations/` | Zero-shot evaluation of video MLLMs (Qwen2.5/3-VL, InternVL, LLaVA-OneVision, MiniCPM-V, Molmo2, Aria, NVILA) on the shot-selection task. Reports accuracy, precision, recall, F1, IoU, AUC. | cluster, `mllm` / `mllm2` envs | [readme](evaluations/readme.md) |
 | `qwen_pipeline/` | Train/test split, keyframe cache (HDF5), batched Qwen3-VL-8B inference, LoRA fine-tuning. Reuses the `evaluations/` prompts and metrics. | cluster, `mllm2` env | [training readme](qwen_pipeline/training/README.md), `results/SFT_EVAL_SUMMARY.md` |
 
