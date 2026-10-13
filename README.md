@@ -1,5 +1,10 @@
 # AdShot
 
+[![arXiv](https://img.shields.io/badge/arXiv-coming%20soon-b31b1b?logo=arxiv&logoColor=white)](#)
+[![Hugging Face Dataset](https://img.shields.io/badge/%F0%9F%A4%97%20Dataset-adshot__benchmark-ffd21e)](https://huggingface.co/datasets/omrastogi/adshot_benchmark)
+[![GitHub](https://img.shields.io/badge/GitHub-AdShot-181717?logo=github)](https://github.com/ostadabbas/AdShot)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey)](https://creativecommons.org/licenses/by-nc/4.0/)
+
 Builds and benchmarks **AdShot**, a dataset of paired 30 s / 15 s cuts of the same TV ad with a shot-level mapping between them. The task: given the shots of a 30 s ad, choose the shots that make up its 15 s version.
 
 ![Shot selection: shots of a 30 s ad mapped to its 15 s cut](asset/shot_selection.gif)
